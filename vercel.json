@@ -1,0 +1,17 @@
+{
+  "buildCommand": "cd artifacts/username-store && pnpm run build",
+  "outputDirectory": "artifacts/username-store/dist/public",
+  "installCommand": "pnpm install",
+  "framework": null,
+  "build": {
+    "env": {
+      "BASE_PATH": "/",
+      "PORT": "3000",
+      "NODE_ENV": "production"
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/usernames" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
