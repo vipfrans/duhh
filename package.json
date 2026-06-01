@@ -5,7 +5,6 @@
   "type": "module",
   "packageManager": "pnpm@9.1.0",
   "scripts": {
-    "preinstall": "npx pnpm@9.1.0 install --only=prod",
     "dev": "vite --config vite.config.ts --host 0.0.0.0",
     "build": "vite build --config vite.config.ts",
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
