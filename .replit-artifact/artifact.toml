@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "4L Username Store"
+version = "1.0.0"
+id = "artifacts/username-store"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23825
+
+[services.development]
+run = "pnpm --filter @workspace/username-store run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/username-store", "run", "build" ]
+publicDir = "artifacts/username-store/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23825"
+BASE_PATH = "/"
