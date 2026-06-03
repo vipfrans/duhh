@@ -9,8 +9,9 @@ import fs from "fs";
 //   KV_REST_API_TOKEN — your read/write token
 // ---------------------------------------------------------------------------
 
-const KV_URL   = process.env.KV_REST_API_URL;
-const KV_TOKEN = process.env.KV_REST_API_TOKEN;
+// Supports both Upstash direct and legacy Vercel KV env var names
+const KV_URL   = process.env.UPSTASH_REDIS_REST_URL   || process.env.KV_REST_API_URL;
+const KV_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
 const KV_KEY   = "4l-usernames";
 const TMP_FILE = "/tmp/4l-usernames.json";
 
