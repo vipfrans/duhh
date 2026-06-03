@@ -1,11 +1,17 @@
 import fs from "fs";
 
 // ---------------------------------------------------------------------------
-// Persistent storage via /tmp (survives within a warm serverless instance).
-// For production with true cross-instance persistence, swap this for
-// Vercel KV: https://vercel.com/docs/storage/vercel-kv
+// Storage layer — uses Vercel KV (Redis) when env vars are present,
+// falls back to /tmp file for local dev or cold-start safety.
+//
+// Vercel KV env vars (auto-injected when you connect a KV store):
+//   KV_REST_API_URL   — e.g. https://xxx.kv.vercel-storage.com
+//   KV_REST_API_TOKEN — your read/write token
 // ---------------------------------------------------------------------------
 
+const KV_URL   = process.env.KV_REST_API_URL;
+const KV_TOKEN = process.env.KV_REST_API_TOKEN;
+const KV_KEY   = "4l-usernames";
 const TMP_FILE = "/tmp/4l-usernames.json";
 
 const DEFAULT_POOL: string[] = [
@@ -24,29 +30,75 @@ const DEFAULT_POOL: string[] = [
   "al3z", "bv8d", "ex6t", "qm1f", "yw4r", "nk9s", "pc2w", "gz7h",
 ];
 
-// Module-level cache — shared across requests in the same warm instance
-let _stock: string[] | null = null;
+// ── KV helpers (Upstash-compatible REST API, used by Vercel KV) ──────────
 
-function readStock(): string[] {
-  if (_stock !== null) return _stock;
+async function kvRead(): Promise<string[] | null> {
+  if (!KV_URL || !KV_TOKEN) return null;
+  try {
+    const res = await fetch(`${KV_URL}/get/${KV_KEY}`, {
+      headers: { Authorization: `Bearer ${KV_TOKEN}` },
+    });
+    const data = await res.json() as { result?: string };
+    if (data.result == null) return null;
+    return JSON.parse(data.result) as string[];
+  } catch { return null; }
+}
+
+async function kvWrite(usernames: string[]): Promise<void> {
+  if (!KV_URL || !KV_TOKEN) return;
+  try {
+    await fetch(`${KV_URL}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${KV_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(["SET", KV_KEY, JSON.stringify(usernames)]),
+    });
+  } catch { /* best effort */ }
+}
+
+// ── /tmp fallback (same-instance persistence when KV not available) ───────
+
+let _cache: string[] | null = null;
+
+function tmpRead(): string[] {
+  if (_cache !== null) return _cache;
   try {
     if (fs.existsSync(TMP_FILE)) {
-      _stock = JSON.parse(fs.readFileSync(TMP_FILE, "utf8"));
-      return _stock!;
+      _cache = JSON.parse(fs.readFileSync(TMP_FILE, "utf8"));
+      return _cache!;
     }
   } catch { /* fallthrough */ }
-  _stock = [...DEFAULT_POOL];
-  writeStock(_stock);
-  return _stock;
+  _cache = [...DEFAULT_POOL];
+  tmpWrite(_cache);
+  return _cache;
 }
 
-function writeStock(usernames: string[]): void {
-  _stock = usernames;
-  try { fs.writeFileSync(TMP_FILE, JSON.stringify(usernames), "utf8"); } catch { /* read-only fs */ }
+function tmpWrite(usernames: string[]): void {
+  _cache = usernames;
+  try { fs.writeFileSync(TMP_FILE, JSON.stringify(usernames), "utf8"); } catch { /* read-only */ }
 }
+
+// ── Unified read/write ────────────────────────────────────────────────────
+
+async function readStock(): Promise<string[]> {
+  const kv = await kvRead();
+  if (kv !== null) {
+    _cache = kv; // keep local cache in sync
+    return kv;
+  }
+  return tmpRead();
+}
+
+async function writeStock(usernames: string[]): Promise<void> {
+  await kvWrite(usernames); // persist to KV
+  tmpWrite(usernames);      // update local cache too
+}
+
+// ── Body parser ───────────────────────────────────────────────────────────
 
 async function parseBody(req: any): Promise<any> {
-  // Vercel may already have parsed the body, or we parse it manually
   if (req.body !== undefined) return req.body;
   return new Promise((resolve) => {
     let raw = "";
@@ -54,6 +106,8 @@ async function parseBody(req: any): Promise<any> {
     req.on("end", () => { try { resolve(JSON.parse(raw)); } catch { resolve({}); } });
   });
 }
+
+// ── Main handler ──────────────────────────────────────────────────────────
 
 export default async function handler(req: any, res: any) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -63,51 +117,48 @@ export default async function handler(req: any, res: any) {
 
   if (req.method === "OPTIONS") { res.status(200).end(); return; }
 
-  // Determine sub-path from the original URL
-  // e.g. /api/usernames       → ""
-  //      /api/usernames/claim → "claim"
-  //      /api/usernames/list  → "list"
   const rawUrl: string = req.url || "";
   const subPath = rawUrl.replace(/^\/api\/usernames\/?/, "").split("?")[0];
-  const method = (req.method || "GET").toUpperCase();
+  const method  = (req.method || "GET").toUpperCase();
 
-  // ── GET /api/usernames ── stock count
+  // GET /api/usernames — stock count
   if (subPath === "" && method === "GET") {
-    return res.end(JSON.stringify({ count: readStock().length }));
+    const stock = await readStock();
+    return res.end(JSON.stringify({ count: stock.length }));
   }
 
-  // ── GET /api/usernames/list ── full list (dev panel)
+  // GET /api/usernames/list — full list (dev panel)
   if (subPath === "list" && method === "GET") {
-    const stock = readStock();
+    const stock = await readStock();
     return res.end(JSON.stringify({ usernames: stock, count: stock.length }));
   }
 
-  // ── POST /api/usernames/claim ── claim one username
+  // POST /api/usernames/claim — claim one username
   if (subPath === "claim" && method === "POST") {
-    const stock = readStock();
+    const stock = await readStock();
     if (stock.length === 0) {
       res.statusCode = 410;
       return res.end(JSON.stringify({ error: "Out of stock" }));
     }
-    const idx = Math.floor(Math.random() * stock.length);
+    const idx     = Math.floor(Math.random() * stock.length);
     const claimed = stock[idx];
     const remaining = stock.filter((_, i) => i !== idx);
-    writeStock(remaining);
+    await writeStock(remaining);
     return res.end(JSON.stringify({ username: claimed, remaining: remaining.length }));
   }
 
-  // ── PUT /api/usernames ── set stock (dev panel)
+  // PUT /api/usernames — set stock (dev panel)
   if (subPath === "" && method === "PUT") {
-    const body = await parseBody(req);
+    const body  = await parseBody(req);
     const raw: unknown[] = Array.isArray(body?.usernames) ? body.usernames : [];
     const clean = raw.map((u) => String(u).trim().toLowerCase()).filter(Boolean);
-    writeStock(clean);
+    await writeStock(clean);
     return res.end(JSON.stringify({ count: clean.length }));
   }
 
-  // ── DELETE /api/usernames ── clear all (dev panel)
+  // DELETE /api/usernames — clear all (dev panel)
   if (subPath === "" && method === "DELETE") {
-    writeStock([]);
+    await writeStock([]);
     return res.end(JSON.stringify({ count: 0 }));
   }
 
