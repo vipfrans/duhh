@@ -12,7 +12,7 @@ import fs from "fs";
 // Supports both Upstash direct and legacy Vercel KV env var names
 const KV_URL   = process.env.UPSTASH_REDIS_REST_URL   || process.env.KV_REST_API_URL;
 const KV_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
-const KV_KEY   = "4l-usernames";
+const KV_KEY   = "4l-usernames-v3"; // bump version to force fresh start
 const TMP_FILE = "/tmp/4l-usernames.json";
 
 const DEFAULT_POOL: string[] = [
