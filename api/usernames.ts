@@ -89,7 +89,13 @@ async function readStock(): Promise<string[]> {
     _cache = kv; // keep local cache in sync
     return kv;
   }
-  return tmpRead();
+  // KV is configured but key doesn't exist yet — initialise it now so
+  // every serverless instance shares the same single source of truth.
+  const initial = tmpRead();
+  if (KV_URL && KV_TOKEN) {
+    await kvWrite(initial); // seed KV once; all future instances read this
+  }
+  return initial;
 }
 
 async function writeStock(usernames: string[]): Promise<void> {
