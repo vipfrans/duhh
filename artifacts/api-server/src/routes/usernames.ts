@@ -7,61 +7,87 @@ const router = Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_FILE = path.resolve(__dirname, "../../data/usernames.json");
 
-// Default pool loaded once if no data file exists
-const DEFAULT_POOL: string[] = [
-  "zx9k", "q7vr", "mp4n", "tr2w", "bx5f", "ky8d", "jv3s", "hl6p",
-  "wn0t", "cg1e", "df4y", "su7b", "rx2a", "lo9m", "pk3z", "ev6c",
-  "ub8h", "yn5i", "gt0f", "aq4j", "xd7n", "fm2w", "cs9r", "it6k",
-  "nw3v", "be5o", "hz8s", "rp1t", "vk4g", "mj7l", "oc0d", "ly2e",
-  "sa6n", "dq9b", "hw4f", "ur7x", "pg3c", "tk8z", "fb1m", "en5a",
-  "gx2y", "jd9p", "lv0s", "wc7h", "qi4t", "nb6r", "yo3k", "mk8w",
-  "at5j", "rz1n", "sx9g", "fh4b", "pm2l", "de7v", "gu0e", "cl3s",
-  "kw6a", "vy8f", "tn1d", "ib4r", "oq7z", "bp5m", "xj2k", "hf9c",
-  "wr3t", "sg0n", "al6p", "dz4y", "ce8w", "kn7j", "mv1b", "uo5x",
-  "rt2h", "fl9s", "bk4g", "yw0e", "ni3d", "qa6c", "tx8m", "sr1z",
-  "gp4f", "ed7k", "vl2n", "mh5r", "oa9t", "jb3w", "cu0s", "ny6j",
-  "dp8a", "fx1e", "wl4v", "ko9b", "tb7c", "rg2p", "sf5n", "hm0k",
-  "al3z", "bv8d", "ex6t", "qm1f", "yw4r", "nk9s", "pc2w", "gz7h",
-];
+// ── Upstash KV (shared storage — same instance used by Vercel) ─────────────
+const KV_URL   = process.env.UPSTASH_REDIS_REST_URL   || process.env.KV_REST_API_URL;
+const KV_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+const KV_KEY   = "4l-usernames-v3";
+
+async function kvRead(): Promise<string[] | null> {
+  if (!KV_URL || !KV_TOKEN) return null;
+  try {
+    const res = await fetch(`${KV_URL}/get/${KV_KEY}`, {
+      headers: { Authorization: `Bearer ${KV_TOKEN}` },
+    });
+    const data = await res.json() as { result?: string };
+    if (data.result == null) return null;
+    return JSON.parse(data.result) as string[];
+  } catch { return null; }
+}
+
+async function kvWrite(usernames: string[]): Promise<void> {
+  if (!KV_URL || !KV_TOKEN) return;
+  try {
+    await fetch(`${KV_URL}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${KV_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify(["SET", KV_KEY, JSON.stringify(usernames)]),
+    });
+  } catch { /* best effort */ }
+}
+
+// ── File fallback (local dev only, when KV not configured) ─────────────────
 
 function ensureDataDir() {
   const dir = path.dirname(DATA_FILE);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-function readStock(): string[] {
+function fileRead(): string[] {
   ensureDataDir();
-  if (!fs.existsSync(DATA_FILE)) {
-    writeStock(DEFAULT_POOL);
-    return [...DEFAULT_POOL];
-  }
-  try {
-    return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-  } catch {
-    return [];
-  }
+  if (!fs.existsSync(DATA_FILE)) { fileWrite([]); return []; }
+  try { return JSON.parse(fs.readFileSync(DATA_FILE, "utf8")); } catch { return []; }
 }
 
-function writeStock(usernames: string[]) {
+function fileWrite(usernames: string[]) {
   ensureDataDir();
   fs.writeFileSync(DATA_FILE, JSON.stringify(usernames), "utf8");
 }
 
+// ── Unified read/write ──────────────────────────────────────────────────────
+
+async function readStock(): Promise<string[]> {
+  if (KV_URL && KV_TOKEN) {
+    const kv = await kvRead();
+    return kv !== null ? kv : [];   // empty = no stock yet
+  }
+  return fileRead();
+}
+
+async function writeStock(usernames: string[]): Promise<void> {
+  if (KV_URL && KV_TOKEN) {
+    await kvWrite(usernames);
+  } else {
+    fileWrite(usernames);
+  }
+}
+
+// ── Routes ──────────────────────────────────────────────────────────────────
+
 // GET /api/usernames — get current stock count
-router.get("/", (_req, res) => {
-  const stock = readStock();
+router.get("/", async (_req, res) => {
+  const stock = await readStock();
   res.json({ count: stock.length });
 });
 
 // GET /api/usernames/list — get full list (for dev panel)
-router.get("/list", (_req, res) => {
-  const stock = readStock();
+router.get("/list", async (_req, res) => {
+  const stock = await readStock();
   res.json({ usernames: stock, count: stock.length });
 });
 
 // POST /api/usernames/claim — claim one username
-router.post("/claim", (_req, res) => {
-  const stock = readStock();
+router.post("/claim", async (_req, res) => {
+  const stock = await readStock();
   if (stock.length === 0) {
     res.status(410).json({ error: "Out of stock" });
     return;
@@ -69,25 +95,25 @@ router.post("/claim", (_req, res) => {
   const idx = Math.floor(Math.random() * stock.length);
   const claimed = stock[idx];
   const remaining = stock.filter((_, i) => i !== idx);
-  writeStock(remaining);
+  await writeStock(remaining);
   res.json({ username: claimed, remaining: remaining.length });
 });
 
 // PUT /api/usernames — set stock (dev panel)
-router.put("/", (req, res) => {
+router.put("/", async (req, res) => {
   const { usernames } = req.body as { usernames: string[] };
   if (!Array.isArray(usernames)) {
     res.status(400).json({ error: "usernames must be an array" });
     return;
   }
   const clean = usernames.map((u) => String(u).trim().toLowerCase()).filter(Boolean);
-  writeStock(clean);
+  await writeStock(clean);
   res.json({ count: clean.length });
 });
 
 // DELETE /api/usernames — clear all stock (dev panel)
-router.delete("/", (_req, res) => {
-  writeStock([]);
+router.delete("/", async (_req, res) => {
+  await writeStock([]);
   res.json({ count: 0 });
 });
 
