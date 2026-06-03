@@ -84,18 +84,19 @@ function tmpWrite(usernames: string[]): void {
 // ── Unified read/write ────────────────────────────────────────────────────
 
 async function readStock(): Promise<string[]> {
-  const kv = await kvRead();
-  if (kv !== null) {
-    _cache = kv; // keep local cache in sync
-    return kv;
-  }
-  // KV is configured but key doesn't exist yet — initialise it now so
-  // every serverless instance shares the same single source of truth.
-  const initial = tmpRead();
+  // If KV is configured, it is the ONLY source of truth.
+  // Return [] when the key doesn't exist yet — the dev panel sets the stock.
   if (KV_URL && KV_TOKEN) {
-    await kvWrite(initial); // seed KV once; all future instances read this
+    const kv = await kvRead();
+    if (kv !== null) {
+      _cache = kv;
+      return kv;
+    }
+    // Key not set yet → empty stock (dev panel will populate it)
+    return [];
   }
-  return initial;
+  // No KV — local dev fallback
+  return tmpRead();
 }
 
 async function writeStock(usernames: string[]): Promise<void> {
